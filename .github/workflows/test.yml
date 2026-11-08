@@ -1,0 +1,105 @@
+
+name: PowerShell tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up PowerShell modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+          Install-Module Pester `
+            -RequiredVersion 6.2.0 `
+            -Scope CurrentUser `
+            -Force
+
+          Install-Module PSScriptAnalyzer `
+            -RequiredVersion 1.25.0 `
+            -Scope CurrentUser `
+            -Force
+
+      - name: Analyze PowerShell source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Import-Module PSScriptAnalyzer `
+            -RequiredVersion 1.25.0 `
+            -Force
+
+          $paths = @(
+            './src/NodeNpmDoctor/NodeNpmDoctor.psm1',
+            './scripts/NodeNpmDoctor.ps1',
+            './tests/NodeNpmDoctor.Tests.ps1'
+          )
+
+          $findings = @(
+            foreach ($path in $paths) {
+              Invoke-ScriptAnalyzer `
+                -Path $path `
+                -Severity Error, Warning `
+                -ErrorAction Stop
+            }
+          )
+
+          if ($findings.Count -gt 0) {
+            $findings | Format-Table `
+              RuleName, Severity, ScriptName, Line, Message -AutoSize
+
+            throw "PSScriptAnalyzer found $($findings.Count) issue(s)."
+          }
+
+          Write-Host 'Static analysis passed.'
+
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Import-Module Pester `
+            -RequiredVersion 6.2.0 `
+            -Force
+
+          Invoke-Pester `
+            -Path ./tests `
+            -CI `
+            -Output Detailed
+
+      - name: Smoke-test JSON output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $json = ./scripts/NodeNpmDoctor.ps1 -Json | Out-String
+
+          $report = $json | ConvertFrom-Json -ErrorAction Stop
+
+          if ([string]$report.SchemaVersion -ne '1.0') {
+            throw 'Unexpected report schema.'
+          }
+
+          if ($report.ReadOnly -ne $true) {
+            throw 'Read-only marker missing.'
+          }
+
+          if (-not $report.Node -or -not $report.Npm) {
+            throw 'Node.js or npm diagnostic result missing.'
+          }
+
+          Write-Host 'JSON smoke test passed.'
